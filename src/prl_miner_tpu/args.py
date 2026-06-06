@@ -16,6 +16,25 @@ class MinerArgs:
     log_level: str = "INFO"
 
 
+def _env_pool_default() -> str:
+    """POOL=host:port, or the PEARL_POOL_HOST/PEARL_POOL_PORT pair, else default."""
+    if os.environ.get("POOL"):
+        return os.environ["POOL"]
+    host = os.environ.get("PEARL_POOL_HOST")
+    if host:
+        port = os.environ.get("PEARL_POOL_PORT", "5566")
+        return f"{host}:{port}"
+    return "us1.alphapool.tech:5566"
+
+
+def _env_password_default() -> str:
+    """Accept POOL_PASSWORD, or build 'x;d=N' from PEARL_DIFFICULTY, else 'x'."""
+    if os.environ.get("POOL_PASSWORD"):
+        return os.environ["POOL_PASSWORD"]
+    diff = os.environ.get("PEARL_DIFFICULTY")
+    return f"x;d={diff}" if diff else "x"
+
+
 def parse_args() -> MinerArgs:
     parser = argparse.ArgumentParser(
         description="Pearl (PRL) NoisyGEMM miner for Google Cloud TPU (v5e / v6e)",
@@ -34,17 +53,18 @@ Tuning (env):
 """,
     )
     parser.add_argument("--pool", "-p",
-        default=os.environ.get("POOL", "us1.alphapool.tech:5566"),
-        metavar="HOST:PORT", help="Stratum pool endpoint")
+        default=_env_pool_default(),
+        metavar="HOST:PORT",
+        help="Stratum pool endpoint (or set POOL, or PEARL_POOL_HOST/PEARL_POOL_PORT)")
     parser.add_argument("--address", "-a",
-        default=os.environ.get("WALLET_ADDRESS", ""),
-        metavar="prl1p...", help="Pearl wallet address (required)")
+        default=os.environ.get("WALLET_ADDRESS") or os.environ.get("PEARL_ADDRESS", ""),
+        metavar="prl1p...", help="Pearl wallet address (or WALLET_ADDRESS / PEARL_ADDRESS)")
     parser.add_argument("--worker", "-w",
-        default=os.environ.get("WORKER_NAME", "tpu1"),
-        help="Worker label shown in the pool dashboard")
+        default=os.environ.get("WORKER_NAME") or os.environ.get("PEARL_WORKER", "tpu1"),
+        help="Worker label shown in the pool dashboard (or WORKER_NAME / PEARL_WORKER)")
     parser.add_argument("--password", "-x",
-        default=os.environ.get("POOL_PASSWORD", "x"),
-        help="Pool password. Use 'x;d=N' to set static difficulty")
+        default=_env_password_default(),
+        help="Pool password. Use 'x;d=N' to set static difficulty (or PEARL_DIFFICULTY)")
     parser.add_argument("--devices",
         default=os.environ.get("DEVICES", ""),
         metavar="0,1,2", help="Comma-separated JAX device indices (default: all)")
