@@ -21,6 +21,10 @@ def main() -> None:
         from .selftest import main as selftest_main
         selftest_main()
         return
+    if mode in ("bench", "benchmark"):
+        from .bench import main as bench_main
+        bench_main()
+        return
 
     args = parse_args()
     logging.basicConfig(

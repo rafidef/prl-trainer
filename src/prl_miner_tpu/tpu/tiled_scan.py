@@ -88,27 +88,24 @@ def build_tiled_scan(M, N, K, rank, rows_pattern, cols_pattern, rbatch=8) -> Til
         top = rows[:, :32, :].reshape(T, K)                       # (T, K)
         bot = rows[:, 32:, :].reshape(T, K)                       # (T, K)
 
-        # Arrange for a scan over G k-blocks: (G, T, rank) and (G, rank, N).
-        top_g = jnp.transpose(top.reshape(T, G, rank), (1, 0, 2))     # (G, T, rank)
-        bot_g = jnp.transpose(bot.reshape(T, G, rank), (1, 0, 2))     # (G, T, rank)
+        # Stack top+bottom into ONE matmul of 2T rows per k-block: bigger MXU op,
+        # half the launches vs two separate (T×rank)@(rank×N) matmuls.
+        A2 = jnp.concatenate([top, bot], axis=0)                  # (2T, K)
+        A2_g = jnp.transpose(A2.reshape(2 * T, G, rank), (1, 0, 2))   # (G, 2T, rank)
         Bn_g = Bn.reshape(G, rank, N)                                 # (G, rank, N)
 
-        def step(carry, xs):
-            acc_top, acc_bot = carry
-            at, bt, bg = xs                                          # (T,rank),(T,rank),(rank,N)
-            ct = jax.lax.dot_general(
-                at.astype(jnp.int8), bg.astype(jnp.int8),
+        def step(acc, xs):
+            a_g, b_g = xs                                            # (2T,rank),(rank,N)
+            c = jax.lax.dot_general(
+                a_g.astype(jnp.int8), b_g.astype(jnp.int8),
                 (((1,), (0,)), ((), ())), preferred_element_type=jnp.int32)
-            cb = jax.lax.dot_general(
-                bt.astype(jnp.int8), bg.astype(jnp.int8),
-                (((1,), (0,)), ((), ())), preferred_element_type=jnp.int32)
-            acc_top = acc_top + ct
-            acc_bot = acc_bot + cb
-            combined = _xor_reduce_last64(acc_top, NC) ^ _xor_reduce_last64(acc_bot, NC)
-            return (acc_top, acc_bot), combined                      # ys: (T, NC)
+            acc = acc + c                                            # (2T, N)
+            xr = _xor_reduce_last64(acc, NC)                         # (2T, NC)
+            combined = xr[:T] ^ xr[T:]                               # (T, NC)
+            return acc, combined
 
-        acc0 = (jnp.zeros((T, N), jnp.int32), jnp.zeros((T, N), jnp.int32))
-        _, combined_all = jax.lax.scan(step, acc0, (top_g, bot_g, Bn_g))  # (G, T, NC)
+        acc0 = jnp.zeros((2 * T, N), jnp.int32)
+        _, combined_all = jax.lax.scan(step, acc0, (A2_g, Bn_g))  # (G, T, NC)
 
         # Fold each k-block's combined into the 16-word transcript (slot = g%16).
         slots = [jnp.zeros((T, NC), _U32) for _ in range(16)]
@@ -164,7 +161,7 @@ def find_first_share(scan: TiledScan, An, Bn, key: bytes, target_le: bytes):
     return find_share_device(scan, An_j, Bn_j, kw, tw)
 
 
-def pick_rbatch(M: int, max_rbatch: int = 8) -> int:
+def pick_rbatch(M: int, max_rbatch: int = 16) -> int:
     """Largest power-of-two rbatch (<= max_rbatch) such that rbatch*64 divides M."""
     nblocks = M // _BLOCK
     rb = 1

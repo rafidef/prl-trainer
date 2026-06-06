@@ -42,6 +42,18 @@ from .tpu.miner import TpuMiner
 log = logging.getLogger(__name__)
 
 
+def _fast_int8_matrix(rng: np.random.Generator, rows: int, cols: int) -> np.ndarray:
+    """Uniform int8 matrix in [-64, 63] via a fast PCG byte-fill.
+
+    The miner's A/B are arbitrary (we mine, not run real inference), so only the
+    Pearl data range matters, not the exact distribution. rng.bytes fills at
+    ~GB/s — far faster than rng.integers over a range — cutting startup
+    allocation of the ~0.5 GB matrices from tens of seconds to a couple.
+    """
+    buf = np.frombuffer(rng.bytes(rows * cols), dtype=np.uint8)
+    return ((buf & np.uint8(0x7F)).astype(np.int8) - np.int8(64)).reshape(rows, cols)
+
+
 def _format_hashrate(rate: float) -> str:
     units = ["H/s", "KH/s", "MH/s", "GH/s", "TH/s"]
     value = float(rate)
@@ -167,10 +179,12 @@ class TpuWorker:
 
         if A is None:
             log.info("Allocating A(%d×%d) + B(%d×%d)…", m, k, k, n)
+            t_alloc = time.monotonic()
             rng = np.random.default_rng(self.matrix_seed)
-            A = np.ascontiguousarray(rng.integers(-64, 64, size=(m, k), dtype=np.int8))
-            self._B = np.ascontiguousarray(rng.integers(-64, 64, size=(k, n), dtype=np.int8))
+            A = _fast_int8_matrix(rng, m, k)
+            self._B = _fast_int8_matrix(rng, k, n)
             self._Bt_flat = pad_to_chunk_boundary(np.ascontiguousarray(self._B.T).tobytes())
+            log.info("Allocated + transposed in %.1fs", time.monotonic() - t_alloc)
 
         if mutate:
             A = A.copy()

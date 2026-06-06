@@ -104,8 +104,29 @@ Validated on CPU: `pip install -e .` + console script work; full suite **15
 passed**; `python -m prl_miner_tpu.selftest` passes end-to-end (dense noise,
 dense-core + tiled-core mine_seeded, challenge solver).
 
-## Next / final milestone
-4. **End-to-end on a real TPU VM** — `bash scripts/setup_tpu_vm.sh`, run the
+## Milestone 4 — DONE ✅  (LIVE on a real TPU)
+
+Ran on a Colab TPU (single chip, v5e-class): on-device selftest passed bit-exact,
+and got **multiple live "Share ACCEPTED" from AlphaPool**. Full pipeline works end
+to end (challenge solved on TPU ~92 Mh/s → scan → PlainProof → accepted).
+Sustained ~6.86 TMAC/s effective at the first cut (≈RTX-2080 class, ~3–7% of TPU
+int8 peak). Fixed a live bug: the challenge solver only searched 32-bit nonces, so
+~37% of difficulty-32 seeds fell back to the CPU solver — now full uint64.
+
+## Optimization pass (CPU-validated, bit-exact, 16 tests pass)
+- **Fused top+bottom matmul**: one `(2T×128)@(128×N)` MXU op per k-block instead
+  of two `(T×128)@(128×N)` — bigger matmul, half the launches.
+- **Fast matrix RNG** (`rng.bytes` byte-fill) — ~0.5 GB A/B generation drops from
+  tens of seconds to ~couple; cuts startup.
+- **Bigger row-batch**: `pick_rbatch` cap raised to 16 (override `PRL_RBATCH`).
+- **`PRL_MODE=bench`** (`bench.py`): full-scan TMAC/s with no pool/early-exit noise.
+
+## Next (optional, biggest remaining levers)
+- Multi-chip sharding across a v5e-8/v6e-8 slice (~linear scaling) — Colab is 1 chip.
+- Reduce the per-k (2T×N) int32 HBM traffic (the XOR-fold is memory-bound); tune
+  rbatch vs N tiling; consider int8/int16 intermediate tricks where exactness holds.
+- Difficulty: at very high static d= the pool idle-disconnects (rare shares); use
+  vardiff (omit PEARL_DIFFICULTY) or a moderate value so shares stay steady. — `bash scripts/setup_tpu_vm.sh`, run the
    selftest under `JAX_PLATFORMS=tpu`, then mine and confirm a live AlphaPool
    `Share ACCEPTED`. Then optimize throughput (rbatch tuning, MXU/VPU overlap,
    multi-chip sharding across a v5e/v6e slice). — `JAX_PLATFORMS=tpu`, run full-scale
