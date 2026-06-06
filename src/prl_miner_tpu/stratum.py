@@ -121,7 +121,7 @@ def _solve_challenge_gpu(seed: bytes, difficulty: int) -> Optional[str]:
             return None
         return format(int(nonce), "016x")
     except Exception as e:
-        log.debug("TPU challenge solver unavailable: %s", e)
+        log.warning("TPU challenge solver failed (%s) — falling back to CPU", e, exc_info=True)
         return None
 
 
