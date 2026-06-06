@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prl-miner-tpu"
+version = "0.1.0"
+description = "Pearl (PRL) NoisyGEMM miner for Google Cloud TPU (v5e / v6e)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "ISC" }
+dependencies = [
+    "jax>=0.4.30",
+    "numpy>=1.24",
+    "blake3>=0.4",
+]
+
+[project.optional-dependencies]
+# Install with: pip install -e ".[tpu]"   (on a Cloud TPU VM)
+tpu = ["jax[tpu]>=0.4.30"]
+# Install with: pip install -e ".[cpu]"   (local dev / bit-exact validation)
+cpu = ["jax[cpu]>=0.4.30"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+prl-miner-tpu = "prl_miner_tpu.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
