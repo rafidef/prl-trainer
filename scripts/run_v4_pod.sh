@@ -36,7 +36,7 @@ echo "    Worker base: ${WORKER_BASE} (each VM appends -wN)"
 
 # --worker=all sends the command to every VM concurrently.
 # nohup + backgrounding (&) keeps the miner running after SSH exits.
-gcloud compute tpus tpu-vm ssh "${TPU_NAME}" \
+gcloud alpha compute tpus tpu-vm ssh "${TPU_NAME}" \
     --zone="${ZONE}" --worker=all --tunnel-through-iap \
     --command="cd prl-trainer && source .venv/bin/activate && \
         nohup env JAX_PLATFORMS=tpu \
@@ -48,4 +48,4 @@ gcloud compute tpus tpu-vm ssh "${TPU_NAME}" \
         > /tmp/prl-trainer.log 2>&1 &"
 
 echo "==> Mining launched on all workers. Check logs with:"
-echo "    gcloud compute tpus tpu-vm ssh ${TPU_NAME} --zone=${ZONE} --worker=all --tunnel-through-iap --command='tail -20 /tmp/prl-trainer.log'"
+echo "    gcloud alpha compute tpus tpu-vm ssh ${TPU_NAME} --zone=${ZONE} --worker=all --tunnel-through-iap --command='tail -20 /tmp/prl-trainer.log'"

@@ -18,7 +18,7 @@ ZONE="${2:-us-central2-b}"
 
 echo "==> Stopping mining on all workers of ${TPU_NAME}..."
 
-gcloud compute tpus tpu-vm ssh "${TPU_NAME}" \
+gcloud alpha compute tpus tpu-vm ssh "${TPU_NAME}" \
     --zone="${ZONE}" --worker=all --tunnel-through-iap \
     --command="pkill -f prl-trainer || true"
 
