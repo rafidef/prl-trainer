@@ -20,6 +20,6 @@ echo "==> Stopping mining on all workers of ${TPU_NAME}..."
 
 gcloud compute tpus tpu-vm ssh "${TPU_NAME}" \
     --zone="${ZONE}" --worker=all \
-    --command="pkill -f prl-miner-tpu || true"
+    --command="pkill -f prl-trainer || true"
 
 echo "==> Stopped."
