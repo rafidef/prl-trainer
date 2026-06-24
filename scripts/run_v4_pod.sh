@@ -38,14 +38,14 @@ echo "    Worker base: ${WORKER_BASE} (each VM appends -wN)"
 # nohup + backgrounding (&) keeps the miner running after SSH exits.
 gcloud compute tpus tpu-vm ssh "${TPU_NAME}" \
     --zone="${ZONE}" --worker=all \
-    --command="cd prl-miner-tpu && source .venv/bin/activate && \
+    --command="cd prl-trainer && source .venv/bin/activate && \
         nohup env JAX_PLATFORMS=tpu \
         prl-miner-tpu \
             --address '${WALLET}' \
             --pool '${POOL}' \
             --worker '${WORKER_BASE}' \
             --password '${PASSWORD}' \
-        > /tmp/prl-miner-tpu.log 2>&1 &"
+        > /tmp/prl-trainer.log 2>&1 &"
 
 echo "==> Mining launched on all workers. Check logs with:"
-echo "    gcloud compute tpus tpu-vm ssh ${TPU_NAME} --zone=${ZONE} --worker=all --command='tail -20 /tmp/prl-miner-tpu.log'"
+echo "    gcloud compute tpus tpu-vm ssh ${TPU_NAME} --zone=${ZONE} --worker=all --command='tail -20 /tmp/prl-trainer.log'"
