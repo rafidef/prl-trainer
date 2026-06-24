@@ -30,7 +30,7 @@ echo "==> Setting up all workers on ${TPU_NAME} in ${ZONE}..."
 
 # --worker=all fans out the SSH command to every VM in the pod concurrently.
 gcloud compute tpus tpu-vm ssh "${TPU_NAME}" \
-    --zone="${ZONE}" --worker=all \
+    --zone="${ZONE}" --worker=all --tunnel-through-iap \
     --command="if [ ! -d 'prl-trainer' ]; then git clone https://github.com/rafidef/prl-trainer.git; fi && cd prl-trainer && bash scripts/setup_tpu_vm.sh"
 
 echo "==> Setup complete on all workers."
