@@ -51,7 +51,7 @@ cat <<'EOF'
 Setup complete. To mine (replace the wallet address):
 
   source .venv/bin/activate
-  JAX_PLATFORMS=tpu prl-miner-tpu \
+  JAX_PLATFORMS=tpu prl-trainer \
       --address prl1pYOURWALLET... \
       --pool us1.alphapool.tech:5566 \
       --worker tpu1 \
