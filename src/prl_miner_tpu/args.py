@@ -14,6 +14,8 @@ class MinerArgs:
     devices: list[int] = field(default_factory=list)
     status_interval: int = 30
     log_level: str = "INFO"
+    worker_index: int = -1       # -1 = auto-detect from jax.process_index()
+    no_auto_suffix: bool = False  # if True, don't append -wN to worker name
 
 
 def _env_pool_default() -> str:
@@ -37,7 +39,7 @@ def _env_password_default() -> str:
 
 def parse_args() -> MinerArgs:
     parser = argparse.ArgumentParser(
-        description="Pearl (PRL) NoisyGEMM miner for Google Cloud TPU (v5e / v6e)",
+        description="Pearl (PRL) NoisyGEMM miner for Google Cloud TPU (v4 / v5e / v6e)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Pool endpoints (AlphaPool):
@@ -49,7 +51,12 @@ Omit d= to use the pool's automatic vardiff.
 
 Tuning (env):
   PRL_RBATCH        rows-per-batch override for the tiled scan (default: auto)
+  PRL_NCBATCH       column-batch tiling for reduced HBM traffic (default: auto)
   JAX_PLATFORMS     set to 'tpu' on a Cloud TPU VM
+
+Multi-host pods (v4-64 etc.):
+  All VMs must run the miner simultaneously. Each VM auto-detects its index
+  via jax.process_index() and appends -wN to the worker name.
 """,
     )
     parser.add_argument("--pool", "-p",
@@ -68,6 +75,13 @@ Tuning (env):
     parser.add_argument("--devices",
         default=os.environ.get("DEVICES", ""),
         metavar="0,1,2", help="Comma-separated JAX device indices (default: all)")
+    parser.add_argument("--worker-index",
+        type=int, default=int(os.environ.get("WORKER_INDEX", "-1")),
+        help="Worker index for multi-host pods (-1 = auto from jax.process_index())")
+    parser.add_argument("--no-auto-suffix",
+        action="store_true",
+        default=os.environ.get("PRL_NO_AUTO_SUFFIX", "").lower() in ("1", "true", "yes"),
+        help="Don't auto-append -wN to the worker name on multi-host pods")
     parser.add_argument("--status-interval",
         type=int, default=int(os.environ.get("STATUS_INTERVAL", "30")),
         help="Seconds between hashrate printouts")
@@ -83,4 +97,5 @@ Tuning (env):
     return MinerArgs(
         pool=ns.pool, address=ns.address, worker=ns.worker, password=ns.password,
         devices=devices, status_interval=ns.status_interval, log_level=ns.log_level,
+        worker_index=ns.worker_index, no_auto_suffix=ns.no_auto_suffix,
     )

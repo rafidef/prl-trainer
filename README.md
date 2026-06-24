@@ -1,7 +1,7 @@
-# PRL Miner — Google Cloud TPU (v5e / v6e)
+# PRL Miner — Google Cloud TPU (v4 / v5e / v6e)
 
 An open-source [Pearl (PRL)](https://github.com/pearl-research-labs/pearl) miner
-for **Google Cloud TPU** (v5e and v6e/Trillium), mining on **AlphaPool**.
+for **Google Cloud TPU** (v4, v5e, and v6e/Trillium), mining on **AlphaPool**.
 
 Pearl's proof-of-useful-work (`NoisyGEMM`) is **100% integer math** — `int7×int7→int32`
 matmul, integer XOR-folds, and a single keyed-BLAKE3 block. That maps perfectly onto
@@ -11,7 +11,7 @@ Stratum, Merkle, PlainProof) from the validated `prl-miner-turing` build and swa
 CUDA search kernel for a JAX/XLA one.
 
 > **Heads-up on economics.** PRL mining revenue has been sliding and Cloud TPU rental
-> is not cheap (on-demand v5e/v6e ≈ \$1–2+/chip-hr; cheaper with `--spot`). Model
+> is not cheap (on-demand v4/v5e/v6e ≈ \$1–2+/chip-hr; cheaper with `--spot`). Model
 > profitability before a long run. This project is about making it *work* on TPU; whether
 > it *pays* is a separate question.
 
@@ -39,6 +39,38 @@ JAX_PLATFORMS=tpu prl-miner-tpu \
 
 v6e (Trillium): `--accelerator-type=v6e-1 --zone=us-east5-a`. Add `--spot` to the
 `create` call for preemptible (cheaper) capacity.
+
+## Quick start (v4-64 pod)
+
+A v4-64 pod has **8 worker VMs × 4 chips each = 32 chips**. All 8 VMs must be
+running simultaneously (TPU pod requirement).
+
+```bash
+# 1. Provision a v4-64 pod (from your workstation)
+gcloud compute tpus tpu-vm create prl-miner \
+    --zone=us-central2-b \
+    --accelerator-type=v4-64 \
+    --version=tpu-ubuntu2204-base
+
+# 2. Setup all workers (installs deps + runs selftest on every VM)
+bash scripts/setup_v4_pod.sh prl-miner us-central2-b
+
+# 3. Start mining on all workers
+bash scripts/run_v4_pod.sh prl-miner us-central2-b prl1pYOURWALLET...
+
+# 4. Check logs across all workers
+gcloud compute tpus tpu-vm ssh prl-miner \
+    --zone=us-central2-b \
+    --worker=all \
+    --command='tail -20 /tmp/prl-miner-tpu.log'
+
+# 5. Stop mining on all workers
+bash scripts/stop_v4_pod.sh prl-miner us-central2-b
+```
+
+> **Note:** All 8 VMs must be running simultaneously — this is a TPU pod
+> requirement. Each VM mines independently after `jax.distributed.initialize()`
+> with its own pool connection, matrices, and 4 local chips.
 
 ## Local dev / correctness validation (no TPU)
 
@@ -79,6 +111,13 @@ CLI flags or env vars (see `.env.example`): `--address/WALLET_ADDRESS`,
 static difficulty; AlphaPool minimum is 20000), `--devices/DEVICES`. Set
 `JAX_PLATFORMS=tpu` on the VM.
 
+## Performance tuning
+
+| Variable | Description |
+|---|---|
+| `PRL_RBATCH` | Row-batch size (auto-selected). v4 default is larger due to 32 GB HBM per chip (vs v5e's 16 GB). |
+| `PRL_NCBATCH` | Column-batch tiling for reduced HBM traffic. Tiles the N dimension so the accumulator fits in VMEM/L1 instead of streaming through HBM every k-step. Default: auto. |
+
 ## Status
 
 | Component | State |
@@ -88,6 +127,8 @@ static difficulty; AlphaPool minimum is 20000), `--devices/DEVICES`. Set
 | Tiled/streaming scan (full scale) | ✅ CPU-validated |
 | TPU challenge solver | ✅ CPU-validated |
 | Host pipeline (Stratum/Merkle/PlainProof) | ✅ reused from turing (live AlphaPool-accepted) |
+| Multi-chip device pinning | ✅ |
+| Multi-host v4 pod support | ✅ |
 | Live `Share ACCEPTED` on a real TPU VM | ⬜ run it and confirm |
 
 Pool endpoints (AlphaPool): PPLNS `:5566`, SOLO `:5567`, regions

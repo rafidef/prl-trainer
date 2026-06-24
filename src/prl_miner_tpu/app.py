@@ -2,6 +2,10 @@
 Mining orchestrator: connects to AlphaPool via Stratum, dispatches jobs to one
 TpuWorker per TPU device, and submits PlainProofs. Adapted from the turing
 miner.py; the device enumeration uses JAX devices instead of CUDA.
+
+On multi-host pods (v4-64 etc.), each VM runs this independently after
+jax.distributed.initialize().  Only the LOCAL devices are used — no cross-VM
+data transfer during mining.
 """
 from __future__ import annotations
 
@@ -18,21 +22,49 @@ from .worker import TpuWorker
 log = logging.getLogger(__name__)
 
 
+def _init_distributed() -> int:
+    """Initialize JAX distributed runtime (required on multi-host pods).
+
+    On single-host VMs this is a harmless no-op.  Returns the process index
+    (0 on single-host, 0..N-1 on a pod).
+    """
+    try:
+        jax.distributed.initialize()
+    except Exception:
+        # Already initialized, or single-host where it isn't needed.
+        pass
+    return jax.process_index()
+
+
 class Miner:
     def __init__(self, args: MinerArgs):
         self.args = args
 
-        devices = jax.devices()
-        if not devices:
+        process_idx = _init_distributed()
+
+        # On a pod, local_devices() returns only this VM's chips (e.g. 4 on v4).
+        # On a single-host VM, local_devices() == devices() (all chips).
+        local_devs = jax.local_devices()
+        if not local_devs:
             raise RuntimeError("No JAX devices found.")
         backend = jax.default_backend()
         if backend != "tpu":
             log.warning("JAX backend is '%s', not 'tpu' — running anyway (set JAX_PLATFORMS=tpu "
                         "on a Cloud TPU VM for real hardware).", backend)
 
-        device_ids = args.devices if args.devices else list(range(len(devices)))
-        log.info("Using %d device(s) [%s]: %s", len(device_ids), backend,
-                 [str(devices[i]) for i in device_ids])
+        # Determine the worker name for this VM.
+        num_processes = jax.process_count()
+        if num_processes > 1 and not args.no_auto_suffix:
+            worker_name = f"{args.worker}-w{process_idx}"
+        else:
+            worker_name = args.worker
+        self._worker_name = worker_name
+
+        device_ids = args.devices if args.devices else list(range(len(local_devs)))
+        log.info("Process %d/%d  worker=%s  backend=%s  local_devices=%d: %s",
+                 process_idx, num_processes, worker_name, backend,
+                 len(device_ids),
+                 [str(local_devs[i]) for i in device_ids])
 
         self._stratum: Optional[StratumClient] = None
         self._workers: list[TpuWorker] = []
@@ -61,7 +93,7 @@ class Miner:
 
         self._stratum = StratumClient(
             host=host, port=port,
-            address=self.args.address, worker=self.args.worker,
+            address=self.args.address, worker=self._worker_name,
             password=self.args.password, job_callback=self._on_job,
             reconnect_delay=5.0,
         )

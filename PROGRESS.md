@@ -1,6 +1,6 @@
 # PRL TPU Miner — Progress
 
-A Google **Cloud TPU (v5e / v6e)** miner for Pearl (PRL), based on the validated
+A Google **Cloud TPU (v4 / v5e / v6e)** miner for Pearl (PRL), based on the validated
 `../prl-miner-turing/` codebase. The host pipeline (AlphaPool Stratum, noise
 generation, Merkle trees, PlainProof serialization — all already "Share ACCEPTED"
 on AlphaPool) is reused unchanged. The **only** new component is the search
@@ -140,3 +140,28 @@ At full scale the candidate grid is huge (M/64·32 × N/64 ≈ 134M tiles/scan).
 correctness core materializes `(T_m, T_n, G, P, C)`; the TPU version must **tile**
 the scan (stream row/col blocks, early-exit on a hit like the CUDA kernel) rather
 than materialize it. That's milestone 3/4 work.
+
+## Milestone 5 — Multi-chip + v4 pod support
+
+Multi-chip and multi-host support for TPU v4 pods (tested target: v4-64 with 8
+worker VMs × 4 chips each = 32 chips).
+
+- **Per-chip device pinning**: `TpuMiner(device_id)` now uses
+  `jax.device_put(data, jax.local_devices()[device_id])` to pin matrices and
+  computations to a specific TPU chip. Previously `device_id` was stored but
+  never used — all 4 chips' workers competed for device 0.
+- **Multi-host pod support**: `jax.distributed.initialize()` called at startup
+  (required for v4/v5e/v6e pods; no-op on single-host VMs). Each VM mines
+  independently after init — own pool connection, own matrices, own 4 chips.
+  Worker names auto-suffixed with `-wN` (N = `jax.process_index()`).
+- **Parallel challenge solver**: nonce space split across all local chips for
+  ~4× faster `pearl.challenge` solve on multi-chip VMs.
+- **Throughput optimizations**:
+  - Fused transcript accumulation into `lax.scan` carry — eliminates the
+    `(G, T, NC)` intermediate tensor from HBM.
+  - Column-block N-tiling (`PRL_NCBATCH`) — tiles the N dimension so the
+    accumulator fits in VMEM/L1 instead of streaming through HBM every k-step.
+  - Larger default `rbatch` on v4 (32 GB HBM vs v5e's 16 GB).
+- **Deployment scripts**: `setup_v4_pod.sh`, `run_v4_pod.sh`, `stop_v4_pod.sh`
+  for one-command pod management.
+

@@ -19,6 +19,12 @@ share (first-hit early-exit). Only running accumulators (T x N int32) and the
 per-k combined values (G x T x NC uint32) live in HBM — never the full grid.
 
 Bit-identical to the NumPy reference (validated in tests/test_tiled_scan.py).
+
+Optimizations over the original:
+  * Transcript accumulation fused into lax.scan — eliminates the (G, T, NC)
+    intermediate tensor from HBM.
+  * Optional N-tiling (ncbatch) to reduce accumulator HBM traffic.
+  * Auto-scaled rbatch for larger HBM (v4: 32 GB).
 """
 from __future__ import annotations
 
@@ -53,6 +59,7 @@ class TiledScan:
     K: int
     rank: int
     rbatch: int          # number of 64-row blocks per batch
+    ncbatch: int         # column-blocks per sub-batch (0 = all at once)
     rows_pattern: tuple
     cols_pattern: tuple
     scan_batch: object   # jitted f(An, Bn, key_words, target_words, rb0)
@@ -63,7 +70,8 @@ class TiledScan:
         return self.M // (self.rbatch * _BLOCK)
 
 
-def build_tiled_scan(M, N, K, rank, rows_pattern, cols_pattern, rbatch=8) -> TiledScan:
+def build_tiled_scan(M, N, K, rank, rows_pattern, cols_pattern,
+                     rbatch=8, ncbatch=None) -> TiledScan:
     rows_pattern = tuple(int(x) for x in rows_pattern)
     cols_pattern = tuple(int(x) for x in cols_pattern)
     assert rows_pattern == (0, 32), "tiled scan specialized for rows_pattern [0,32]"
@@ -76,47 +84,121 @@ def build_tiled_scan(M, N, K, rank, rows_pattern, cols_pattern, rbatch=8) -> Til
     T = rbatch * 32            # candidate rows per batch (32 per 64-row block)
     span = rbatch * _BLOCK     # An rows pulled per batch
 
+    # N-tiling: split NC columns into sub-batches of ncbatch each.
+    # ncbatch=None or 0 means process all columns at once (original behavior).
+    if ncbatch is None or ncbatch <= 0 or ncbatch >= NC:
+        ncbatch_actual = NC  # no N-tiling
+    else:
+        # Round up to make NC divisible.
+        while NC % ncbatch != 0 and ncbatch < NC:
+            ncbatch += 1
+        ncbatch_actual = ncbatch
+
     # Static map: flat candidate row c -> tile_m offset within the batch.
     c2off = np.array([(c // 32) * _BLOCK + (c % 32) for c in range(T)], dtype=np.int32)
     c2off_j = jnp.asarray(c2off)
     cb2n = jnp.asarray(np.arange(NC, dtype=np.int32) * _BLOCK)
 
-    def _transcripts(An, Bn, rb0):
-        # Pull this batch's rows and split into top (i=0..31) / bottom (i=32..63).
+    # Precompute slot indices for transcript folding.
+    slot_indices = jnp.asarray(np.array([g % 16 for g in range(G)], dtype=np.int32))
+
+    def _transcripts_fused(An, Bn, rb0):
+        """Row-batch transcripts with transcript accumulation fused into lax.scan.
+
+        The transcript (T, NC, 16) is carried directly in the scan state, so the
+        (G, T, NC) combined intermediate never materializes in HBM.
+        """
         rows = jax.lax.dynamic_slice(An, (rb0, 0), (span, K))     # (span, K) int8
         rows = rows.reshape(rbatch, _BLOCK, K)
         top = rows[:, :32, :].reshape(T, K)                       # (T, K)
         bot = rows[:, 32:, :].reshape(T, K)                       # (T, K)
 
-        # Stack top+bottom into ONE matmul of 2T rows per k-block: bigger MXU op,
-        # half the launches vs two separate (T×rank)@(rank×N) matmuls.
         A2 = jnp.concatenate([top, bot], axis=0)                  # (2T, K)
         A2_g = jnp.transpose(A2.reshape(2 * T, G, rank), (1, 0, 2))   # (G, 2T, rank)
         Bn_g = Bn.reshape(G, rank, N)                                 # (G, rank, N)
 
-        def step(acc, xs):
-            a_g, b_g = xs                                            # (2T,rank),(rank,N)
+        def step(carry, xs):
+            acc, transcript = carry             # acc: (2T, N), transcript: (T, NC, 16)
+            a_g, b_g, slot = xs                 # (2T,rank), (rank,N), scalar int32
             c = jax.lax.dot_general(
                 a_g.astype(jnp.int8), b_g.astype(jnp.int8),
                 (((1,), (0,)), ((), ())), preferred_element_type=jnp.int32)
             acc = acc + c                                            # (2T, N)
             xr = _xor_reduce_last64(acc, NC)                         # (2T, NC)
             combined = xr[:T] ^ xr[T:]                               # (T, NC)
-            return acc, combined
+            # Fuse transcript fold: tr[:, :, slot] = rotl(tr[:, :, slot], 13) ^ combined
+            old_slot = transcript[:, :, slot]
+            new_slot = _rotl32(old_slot, 13) ^ combined
+            transcript = transcript.at[:, :, slot].set(new_slot)
+            return (acc, transcript), None       # No stacked output!
 
         acc0 = jnp.zeros((2 * T, N), jnp.int32)
-        _, combined_all = jax.lax.scan(step, acc0, (A2_g, Bn_g))  # (G, T, NC)
+        tr0 = jnp.zeros((T, NC, 16), _U32)
+        (_, transcript), _ = jax.lax.scan(step, (acc0, tr0), (A2_g, Bn_g, slot_indices))
 
-        # Fold each k-block's combined into the 16-word transcript (slot = g%16).
-        slots = [jnp.zeros((T, NC), _U32) for _ in range(16)]
-        for g in range(G):
-            s = g % 16
-            slots[s] = _rotl32(slots[s], 13) ^ combined_all[g]
-        return jnp.stack(slots, axis=-1)                             # (T, NC, 16)
+        return transcript                                             # (T, NC, 16)
+
+    def _transcripts_ntiled(An, Bn, rb0):
+        """N-tiled variant: process columns in sub-batches to reduce HBM traffic.
+
+        For each column sub-batch, runs the full k-scan with a smaller accumulator.
+        This trades more MXU invocations for less HBM bandwidth per invocation.
+        """
+        rows = jax.lax.dynamic_slice(An, (rb0, 0), (span, K))
+        rows = rows.reshape(rbatch, _BLOCK, K)
+        top = rows[:, :32, :].reshape(T, K)
+        bot = rows[:, 32:, :].reshape(T, K)
+
+        A2 = jnp.concatenate([top, bot], axis=0)
+        A2_g = jnp.transpose(A2.reshape(2 * T, G, rank), (1, 0, 2))  # (G, 2T, rank)
+
+        n_sub = ncbatch_actual * _BLOCK  # columns per sub-batch
+
+        # Sub-batch scan: full k-dimension for a slice of columns.
+        slot_idx = slot_indices
+
+        def sub_batch_scan(Bn_sub):
+            """Run full k-scan for one column sub-batch. Bn_sub: (K, n_sub)."""
+            Bn_sub_g = Bn_sub.reshape(G, rank, n_sub)
+
+            def step(carry, xs):
+                acc, transcript = carry
+                a_g, b_g, slot = xs
+                c = jax.lax.dot_general(
+                    a_g.astype(jnp.int8), b_g.astype(jnp.int8),
+                    (((1,), (0,)), ((), ())), preferred_element_type=jnp.int32)
+                acc = acc + c
+                xr = _xor_reduce_last64(acc, ncbatch_actual)
+                combined = xr[:T] ^ xr[T:]
+                old_slot = transcript[:, :, slot]
+                new_slot = _rotl32(old_slot, 13) ^ combined
+                transcript = transcript.at[:, :, slot].set(new_slot)
+                return (acc, transcript), None
+
+            acc0 = jnp.zeros((2 * T, n_sub), jnp.int32)
+            tr0 = jnp.zeros((T, ncbatch_actual, 16), _U32)
+            (_, transcript), _ = jax.lax.scan(step, (acc0, tr0), (A2_g, Bn_sub_g, slot_idx))
+            return transcript  # (T, ncbatch_actual, 16)
+
+        # Process each column sub-batch and concatenate transcripts.
+        n_sub_batches = NC // ncbatch_actual
+        transcripts = []
+        for sb in range(n_sub_batches):
+            col_start = sb * n_sub
+            Bn_sub = jax.lax.dynamic_slice(Bn, (0, col_start), (K, n_sub))
+            transcripts.append(sub_batch_scan(Bn_sub))
+
+        return jnp.concatenate(transcripts, axis=1)  # (T, NC, 16)
+
+    # Select the appropriate transcript function.
+    use_ntiling = ncbatch_actual < NC
 
     @jax.jit
     def scan_batch(An, Bn, key_words, target_words, rb0):
-        tr = _transcripts(An, Bn, rb0)                               # (T, NC, 16)
+        if use_ntiling:
+            tr = _transcripts_ntiled(An, Bn, rb0)
+        else:
+            tr = _transcripts_fused(An, Bn, rb0)
         tr_flat = tr.reshape(T * NC, 16)
         digest = bj.compress_keyed_root(tr_flat, key_words)          # (T*NC, 8)
         idx = _lex_argmin(digest)
@@ -129,9 +211,11 @@ def build_tiled_scan(M, N, K, rank, rows_pattern, cols_pattern, rbatch=8) -> Til
 
     @jax.jit
     def debug_batch(An, Bn, rb0):
-        return _transcripts(An, Bn, rb0)
+        if use_ntiling:
+            return _transcripts_ntiled(An, Bn, rb0)
+        return _transcripts_fused(An, Bn, rb0)
 
-    return TiledScan(M, N, K, rank, rbatch, rows_pattern, cols_pattern,
+    return TiledScan(M, N, K, rank, rbatch, ncbatch_actual, rows_pattern, cols_pattern,
                      scan_batch, debug_batch)
 
 

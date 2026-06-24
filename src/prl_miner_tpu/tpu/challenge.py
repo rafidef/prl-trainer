@@ -8,6 +8,9 @@ pure-Python BLAKE3, so the CUDA miner solves it on the GPU. Here we do the same
 on the TPU: vectorize the (single-block, non-keyed) BLAKE3 over a batch of nonces
 and scan batches until one clears the bar.
 
+Multi-chip: when multiple local chips are available, the nonce space is split
+across them for ~N× faster solving (N = number of local chips).
+
 The hashed message is seed(32B = 8 words) || nonce(8B = 2 words) || zero-pad, a
 40-byte single block, hashed with the plain (IV) chaining value.
 """
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import time
 import logging
+import concurrent.futures
 
 import jax
 import jax.numpy as jnp
@@ -65,6 +69,25 @@ def _build_kernel(difficulty: int):
     return kernel
 
 
+def _solve_on_device(device, seed_words_np, difficulty, batch, start, end):
+    """Solve challenge on a single device starting from nonce `start` up to `end`."""
+    seed_words = jax.device_put(jnp.asarray(seed_words_np), device)
+    kernel = _build_kernel(difficulty)
+    base = start
+    while base < end:
+        n = min(batch, end - base)
+        nonces = np.arange(base, base + n, dtype=np.uint64)
+        nonce_lo = jax.device_put(
+            jnp.asarray((nonces & np.uint64(0xFFFFFFFF)).astype(np.uint32)), device)
+        nonce_hi = jax.device_put(
+            jnp.asarray((nonces >> np.uint64(32)).astype(np.uint32)), device)
+        any_hit, w_lo, w_hi = kernel(seed_words, nonce_lo, nonce_hi)
+        if bool(any_hit):
+            return (int(w_hi) << 32) | int(w_lo), base + n
+        base += n
+    return None, end
+
+
 def solve_challenge_tpu(seed: bytes, difficulty: int,
                         batch: int = 1 << 23, max_nonce: int = 1 << 36):
     """Return the winning uint64 nonce (int) or None if none found below max_nonce.
@@ -72,23 +95,51 @@ def solve_challenge_tpu(seed: bytes, difficulty: int,
     Searches the full 64-bit nonce space (the pool's nonce is uint64); ~37% of
     difficulty-32 seeds have no solution below 2^32, so a 32-bit-only search would
     spuriously fail on them.
+
+    Multi-chip: splits the nonce space across all local TPU chips for parallel
+    solving. Each chip searches a disjoint region.
     """
     assert len(seed) == 32, "challenge seed must be 32 bytes"
-    seed_words = jnp.asarray(np.frombuffer(seed, dtype="<u4").astype(np.uint32))
-    kernel = _build_kernel(difficulty)
+    seed_words_np = np.frombuffer(seed, dtype="<u4").astype(np.uint32)
+
+    local_devs = jax.local_devices()
+    num_devices = len(local_devs)
     t0 = time.monotonic()
-    base = 0
-    while base < max_nonce:
-        n = min(batch, max_nonce - base)
-        nonces = np.arange(base, base + n, dtype=np.uint64)
-        nonce_lo = jnp.asarray((nonces & np.uint64(0xFFFFFFFF)).astype(np.uint32))
-        nonce_hi = jnp.asarray((nonces >> np.uint64(32)).astype(np.uint32))
-        any_hit, w_lo, w_hi = kernel(seed_words, nonce_lo, nonce_hi)
-        if bool(any_hit):
-            won = (int(w_hi) << 32) | int(w_lo)
+
+    if num_devices <= 1:
+        # Single device: original serial path.
+        won, searched = _solve_on_device(
+            local_devs[0], seed_words_np, difficulty, batch, 0, max_nonce)
+        if won is not None:
             dt = time.monotonic() - t0
             log.info("Challenge solved: difficulty=%d nonce=%d in %.2fs (~%.0f Mh/s)",
-                     difficulty, won, dt, (base + n) / dt / 1e6 if dt > 0 else 0)
-            return won
-        base += n
+                     difficulty, won, dt, searched / dt / 1e6 if dt > 0 else 0)
+        return won
+
+    # Multi-chip: split nonce space evenly across devices.
+    chunk = max_nonce // num_devices
+    log.info("Challenge: splitting %d nonces across %d chips (%d each)",
+             max_nonce, num_devices, chunk)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_devices) as pool:
+        futures = {}
+        for i, dev in enumerate(local_devs):
+            start = i * chunk
+            end = max_nonce if i == num_devices - 1 else (i + 1) * chunk
+            futures[pool.submit(_solve_on_device, dev, seed_words_np,
+                                difficulty, batch, start, end)] = i
+
+        for fut in concurrent.futures.as_completed(futures):
+            won, searched = fut.result()
+            if won is not None:
+                dt = time.monotonic() - t0
+                log.info("Challenge solved: difficulty=%d nonce=%d on chip %d "
+                         "in %.2fs (~%.0f Mh/s effective)",
+                         difficulty, won, futures[fut], dt,
+                         searched / dt / 1e6 if dt > 0 else 0)
+                # Cancel remaining futures (best-effort).
+                for f in futures:
+                    f.cancel()
+                return won
+
     return None

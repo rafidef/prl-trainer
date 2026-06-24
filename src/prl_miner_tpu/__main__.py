@@ -11,7 +11,7 @@ BANNER = r"""
  |  __/|  _ <| |___   | | |  __/| |_| | | |  | | | | | |  __/ |
  |_|   |_| \_\_____|  |_| |_|    \___/  |_|  |_|_|_| |_|\___|_|
 
- Pearl (PRL) NoisyGEMM Miner  —  Google Cloud TPU (v5e / v6e) Edition
+ Pearl (PRL) NoisyGEMM Miner  —  Google Cloud TPU (v4 / v5e / v6e) Edition
 """
 
 

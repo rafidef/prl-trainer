@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "prl-miner-tpu"
 version = "0.1.0"
-description = "Pearl (PRL) NoisyGEMM miner for Google Cloud TPU (v5e / v6e)"
+description = "Pearl (PRL) NoisyGEMM miner for Google Cloud TPU (v4 / v5e / v6e)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "ISC" }
