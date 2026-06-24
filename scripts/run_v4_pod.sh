@@ -40,7 +40,7 @@ gcloud compute tpus tpu-vm ssh "${TPU_NAME}" \
     --zone="${ZONE}" --worker=all \
     --command="cd prl-trainer && source .venv/bin/activate && \
         nohup env JAX_PLATFORMS=tpu \
-        prl-miner-tpu \
+        prl-trainer \
             --address '${WALLET}' \
             --pool '${POOL}' \
             --worker '${WORKER_BASE}' \
