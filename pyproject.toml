@@ -23,7 +23,7 @@ cpu = ["jax[cpu]>=0.4.30"]
 dev = ["pytest>=7"]
 
 [project.scripts]
-prl-trainer = "prl_trainer.__main__:main"
+prl-trainer = "prl_miner_tpu.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
