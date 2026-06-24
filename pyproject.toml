@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "prl-miner-tpu"
+name = "prl-trainer"
 version = "0.1.0"
 description = "Pearl (PRL) NoisyGEMM miner for Google Cloud TPU (v4 / v5e / v6e)"
 readme = "README.md"
@@ -23,7 +23,7 @@ cpu = ["jax[cpu]>=0.4.30"]
 dev = ["pytest>=7"]
 
 [project.scripts]
-prl-miner-tpu = "prl_miner_tpu.__main__:main"
+prl-trainer = "prl_trainer.__main__:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
