@@ -23,7 +23,7 @@
 #
 set -euo pipefail
 
-TPU_NAME="${1:-prl-miner}"
+TPU_NAME="${1:-prl-trainer}"
 ZONE="${2:-us-central2-b}"
 
 echo "==> Setting up all workers on ${TPU_NAME} in ${ZONE}..."
@@ -31,7 +31,7 @@ echo "==> Setting up all workers on ${TPU_NAME} in ${ZONE}..."
 # --worker=all fans out the SSH command to every VM in the pod concurrently.
 gcloud compute tpus tpu-vm ssh "${TPU_NAME}" \
     --zone="${ZONE}" --worker=all \
-    --command="if [ ! -d 'prl-miner-tpu' ]; then git clone https://github.com/Pythontechie21/prl-miner-tpu.git; fi && cd prl-miner-tpu && bash scripts/setup_tpu_vm.sh"
+    --command="if [ ! -d 'prl-trainer' ]; then git clone https://github.com/rafidef/prl-trainer.git; fi && cd prl-trainer && bash scripts/setup_tpu_vm.sh"
 
 echo "==> Setup complete on all workers."
 echo "To start mining:"
