@@ -34,13 +34,14 @@ OUT_LEN = 32
 # work (seed/Merkle-root hashing) that feeds the GPU between scans.
 def _proof_thread_cap() -> int:
     cores = os.cpu_count() or 1
+    default_threads = max(4, cores // 2)
     try:
-        env = int(os.environ.get("PRL_PROOF_THREADS", "4"))
+        env = int(os.environ.get("PRL_PROOF_THREADS", str(default_threads)))
     except ValueError:
-        env = 4
+        env = default_threads
     if env <= 0:
-        env = cores
-    return max(1, min(cores, env, 16))
+        env = default_threads
+    return max(1, min(cores, env, 256))
 
 
 _NUM_THREADS = _proof_thread_cap()

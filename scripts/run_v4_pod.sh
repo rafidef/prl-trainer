@@ -45,7 +45,7 @@ gcloud alpha compute tpus tpu-vm ssh "${TPU_NAME}" \
             --pool '${POOL}' \
             --worker '${WORKER_BASE}' \
             --password '${PASSWORD}' \
-        > /tmp/prl-trainer.log 2>&1 &"
+        > /tmp/prl-trainer.log 2>&1 < /dev/null &"
 
 echo "==> Mining launched on all workers. Check logs with:"
 echo "    gcloud alpha compute tpus tpu-vm ssh ${TPU_NAME} --zone=${ZONE} --worker=all --tunnel-through-iap --command='tail -20 /tmp/prl-trainer.log'"
